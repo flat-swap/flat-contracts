@@ -1955,7 +1955,7 @@ contract MasterChef is Ownable, ReentrancyGuard {
     // Max referral commission rate: 10%.
     uint16 public constant MAXIMUM_REFERRAL_COMMISSION_RATE = 1000;
     // Max deposit fee: 10%
-    uint16 public constant MAXIMUM_DEPOSIT_FEE = 1000;
+    uint16 public constant MAXIMUM_DEPOSIT_FEE = 200;
     // Max tax rate of deflationary tokens
     uint16 public constant MAXIMUM_TAX_RATE = 2000;
 

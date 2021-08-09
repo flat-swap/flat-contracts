@@ -19,8 +19,8 @@ contract FSwapToken is BEP20 {
     // Burn address
     address public constant BURN_ADDRESS = 0x000000000000000000000000000000000000dEaD;
 
-    // Max transfer amount rate in basis points. (default is 0.5% of total supply)
-    uint16 public maxTransferAmountRate = 50;
+    // Max transfer amount rate in basis points. (default is 100% of total supply)
+    uint16 public maxTransferAmountRate = 10000;
     // Addresses that excluded from antiWhale
     mapping(address => bool) private _excludedFromAntiWhale;
     // Automatic swap and liquify enabled
