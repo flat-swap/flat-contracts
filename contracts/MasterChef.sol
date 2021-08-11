@@ -113,6 +113,8 @@ contract MasterChef is Ownable, ReentrancyGuard {
 
     constructor(
         FSwapToken _fswap,
+        address _devAddr,
+        address _feeAddr,
         uint256 _startBlock,
         uint256 _fswapPerBlock
     ) public {
@@ -120,12 +122,18 @@ contract MasterChef is Ownable, ReentrancyGuard {
         startBlock = _startBlock;
         fswapPerBlock = _fswapPerBlock;
 
-        devAddress = msg.sender;
-        feeAddress = msg.sender;
+        devAddress = _devAddr;
+        feeAddress = _feeAddr;
     }
 
     function poolLength() external view returns (uint256) {
         return poolInfo.length;
+    }
+
+    mapping(IBEP20 => bool) public poolExistence;
+    modifier nonDuplicated(IBEP20 _lpToken) {
+        require(poolExistence[_lpToken] == false, "nonDuplicated: duplicated");
+        _;
     }
 
     // Add a new lp to the pool. Can only be called by the owner.
@@ -136,7 +144,7 @@ contract MasterChef is Ownable, ReentrancyGuard {
         uint16 _depositFeeBP,
         uint256 _harvestInterval,
         bool _withUpdate
-    ) public onlyOwner {
+    ) public onlyOwner nonDuplicated(_lpToken) {
         require(
             _depositFeeBP <= MAXIMUM_DEPOSIT_FEE,
             "add: invalid deposit fee basis points"
@@ -152,6 +160,7 @@ contract MasterChef is Ownable, ReentrancyGuard {
             ? block.number
             : startBlock;
         totalAllocPoint = totalAllocPoint.add(_allocPoint);
+        poolExistence[_lpToken] = true;
         poolInfo.push(
             PoolInfo({
                 lpToken: _lpToken,
@@ -216,9 +225,9 @@ contract MasterChef is Ownable, ReentrancyGuard {
                 block.number
             );
             uint256 fswapReward = multiplier
-            .mul(fswapPerBlock)
-            .mul(pool.allocPoint)
-            .div(totalAllocPoint);
+                .mul(fswapPerBlock)
+                .mul(pool.allocPoint)
+                .div(totalAllocPoint);
             accFSwapPerShare = accFSwapPerShare.add(
                 fswapReward.mul(1e12).div(lpSupply)
             );
@@ -260,9 +269,9 @@ contract MasterChef is Ownable, ReentrancyGuard {
         }
         uint256 multiplier = getMultiplier(pool.lastRewardBlock, block.number);
         uint256 fswapReward = multiplier
-        .mul(fswapPerBlock)
-        .mul(pool.allocPoint)
-        .div(totalAllocPoint);
+            .mul(fswapPerBlock)
+            .mul(pool.allocPoint)
+            .div(totalAllocPoint);
         fswap.mint(devAddress, fswapReward.div(10));
         fswap.mint(address(this), fswapReward);
         pool.accFSwapPerShare = pool.accFSwapPerShare.add(
@@ -303,8 +312,8 @@ contract MasterChef is Ownable, ReentrancyGuard {
             } else if (tokenTaxRate(address(pool.lpToken)) > 0) {
                 // For other non-governance defitionary tokens
                 uint256 transferTax = _amount
-                .mul(tokenTaxRate(address(pool.lpToken)))
-                .div(10000);
+                    .mul(tokenTaxRate(address(pool.lpToken)))
+                    .div(10000);
                 _amount = _amount.sub(transferTax);
             }
 
@@ -423,7 +432,10 @@ contract MasterChef is Ownable, ReentrancyGuard {
         public
         onlyOwner
     {
-        require(_taxRate <= MAXIMUM_TAX_RATE, "setTokenTaxRate:: too much tax rate for the token");
+        require(
+            _taxRate <= MAXIMUM_TAX_RATE,
+            "setTokenTaxRate:: too much tax rate for the token"
+        );
         _taxableTokens[_address] = _taxRate;
     }
 
