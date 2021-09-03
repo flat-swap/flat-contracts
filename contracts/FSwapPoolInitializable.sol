@@ -829,16 +829,13 @@ contract FSwapPoolInitializable is Ownable, ReentrancyGuard {
     uint256 public lastRewardBlock;
 
     uint16 public constant MAX_DEPOSIT_FEE = 2000;
-    uint16 public constant MAX_TOKEN_TAX_RATE = 2000;
+    uint16 public constant MAX_EMISSION_RATE = 10**7;
 
     // The deposit fee
     uint16 public depositFee;
 
     // The fee address
     address public feeAddress;
-
-    // The token tax rate
-    uint16 public tokenTaxRate;
 
     // The pool limit (0 if none)
     uint256 public poolLimitPerUser;
@@ -855,6 +852,9 @@ contract FSwapPoolInitializable is Ownable, ReentrancyGuard {
     // The staked token
     IBEP20 public stakedToken;
 
+    // Total supply of staked token
+    uint256 public stakedSupply;
+
     // Info of each user that stakes tokens (stakedToken)
     mapping(address => UserInfo) public userInfo;
 
@@ -866,9 +866,9 @@ contract FSwapPoolInitializable is Ownable, ReentrancyGuard {
     event AdminTokenRecovery(address tokenRecovered, uint256 amount);
     event Deposit(address indexed user, uint256 amount);
     event EmergencyWithdraw(address indexed user, uint256 amount);
+    event EmergencyRewardWithdraw(uint256 amount);
     event NewStartAndEndBlocks(uint256 startBlock, uint256 endBlock);
     event NewRewardPerBlock(uint256 rewardPerBlock);
-    event NewTokenTaxRate(uint16 tokenTaxRate);
     event NewDepositFee(uint16 depositFee);
     event NewFeeAddress(address feeAddress);
     event NewPoolLimit(uint256 poolLimitPerUser);
@@ -879,7 +879,7 @@ contract FSwapPoolInitializable is Ownable, ReentrancyGuard {
         FSWAP_POOL_FACTORY = msg.sender;
     }
 
-    /*
+    /**
      * @notice Initialize the contract
      * @param _stakedToken: staked token address
      * @param _rewardToken: reward token address
@@ -887,7 +887,6 @@ contract FSwapPoolInitializable is Ownable, ReentrancyGuard {
      * @param _startBlock: start block
      * @param _bonusEndBlock: end block
      * @param _poolLimitPerUser: pool limit per user in stakedToken (if any, else 0)
-     * @param _tokenTaxRate: staking token tax rate
      * @param _depositFee: deposit fee
      * @param _feeAddress: fee address
      * @param _admin: admin address with ownership
@@ -899,13 +898,19 @@ contract FSwapPoolInitializable is Ownable, ReentrancyGuard {
         uint256 _startBlock,
         uint256 _bonusEndBlock,
         uint256 _poolLimitPerUser,
-        uint16 _tokenTaxRate,
         uint16 _depositFee,
         address _feeAddress,
         address _admin
     ) external {
         require(!isInitialized, "Already initialized");
         require(msg.sender == FSWAP_POOL_FACTORY, "Not factory");
+        require(_feeAddress != address(0), "Invalid zero address");
+
+        _stakedToken.balanceOf(address(this));
+        _rewardToken.balanceOf(address(this));
+        require(_stakedToken != _rewardToken, "stakedToken must be different from rewardToken");
+        require(_startBlock > block.number, "startBlock cannot be in the past");
+        require(_startBlock < _bonusEndBlock, "startBlock must be lower than endBlock");
 
         // Make this contract initialized
         isInitialized = true;
@@ -915,9 +920,7 @@ contract FSwapPoolInitializable is Ownable, ReentrancyGuard {
         rewardPerBlock = _rewardPerBlock;
         startBlock = _startBlock;
         bonusEndBlock = _bonusEndBlock;
-        require(_tokenTaxRate < MAX_TOKEN_TAX_RATE, "Invalid token tax rate");
-        tokenTaxRate = _tokenTaxRate;
-        require(_depositFee < MAX_DEPOSIT_FEE, "Invalid deposit fee");
+        require(_depositFee <= MAX_DEPOSIT_FEE, "Invalid deposit fee");
         depositFee = _depositFee;
         feeAddress = _feeAddress;
 
@@ -960,29 +963,25 @@ contract FSwapPoolInitializable is Ownable, ReentrancyGuard {
                     user.rewardDebt
                 );
             if (pending > 0) {
-                rewardToken.safeTransfer(address(msg.sender), pending);
+                safeRewardTransfer(msg.sender, pending);
             }
         }
 
-        // deduct token tax rate
-        uint256 realAmount = _amount.sub(_amount.mul(tokenTaxRate).div(10000));
-
         if (_amount > 0) {
-            stakedToken.safeTransferFrom(
-                address(msg.sender),
-                address(this),
-                _amount
-            );
+            uint256 balanceBefore = stakedToken.balanceOf(address(this));
+            stakedToken.safeTransferFrom(msg.sender, address(this), _amount);
+            _amount = stakedToken.balanceOf(address(this)).sub(balanceBefore);
+            uint256 feeAmount = 0;
 
             if (depositFee > 0) {
-                uint256 fee = realAmount.mul(depositFee).div(10000);
+                feeAmount = _amount.mul(depositFee).div(10000);
                 if (fee > 0) {
                     stakedToken.safeTransfer(feeAddress, fee);
                 }
-                user.amount = user.amount.add(realAmount).sub(fee);
-            } else {
-                user.amount = user.amount.add(realAmount);
             }
+
+            user.amount = user.amount.add(_amount).sub(feeAmount);
+            stakedSupply = stakedSupply.add(_amount).sub(feeAmount);
         }
 
         user.rewardDebt = user.amount.mul(accTokenPerShare).div(
@@ -998,7 +997,7 @@ contract FSwapPoolInitializable is Ownable, ReentrancyGuard {
      */
     function withdraw(uint256 _amount) external nonReentrant {
         UserInfo storage user = userInfo[msg.sender];
-        require(user.amount >= _amount, "Amount to withdraw too high");
+        require(stakedSupply >= _amount && user.amount >= _amount, "Amount to withdraw too high");
 
         _updatePool();
 
@@ -1008,18 +1007,13 @@ contract FSwapPoolInitializable is Ownable, ReentrancyGuard {
             );
 
         if (_amount > 0) {
-            uint256 realAmount = _amount;
-
-            if (user.amount < realAmount) {
-                realAmount = user.amount;
-            }
-
-            user.amount = user.amount.sub(realAmount);
-            stakedToken.safeTransfer(address(msg.sender), realAmount);
+            user.amount = user.amount.sub(_amount);
+            stakedSupply = stakedSupply.sub(_amount);
+            stakedToken.safeTransfer(msg.sender, _amount);
         }
 
         if (pending > 0) {
-            rewardToken.safeTransfer(address(msg.sender), pending);
+            safeRewardTransfer(msg.sender, pending);
         }
 
         user.rewardDebt = user.amount.mul(accTokenPerShare).div(
@@ -1029,7 +1023,21 @@ contract FSwapPoolInitializable is Ownable, ReentrancyGuard {
         emit Withdraw(msg.sender, _amount);
     }
 
-    /*
+    /**
+     * @notice Safe reward transfer, just in case if rounding error causes pool to not have enough reward tokens.
+     * @param _to receiver address
+     * @param _amount amount to transfer
+     */
+    function safeRewardTransfer(address _to, uint256 _amount) internal {
+        uint256 rewardBalance = rewardToken.balanceOf(address(this));
+        if (_amount > rewardBalance) {
+            rewardToken.safeTransfer(_to, rewardBalance);
+        } else {
+            rewardToken.safeTransfer(_to, _amount);
+        }
+    }
+
+    /**
      * @notice Withdraw staked tokens without caring about rewards rewards
      * @dev Needs to be for emergency.
      */
@@ -1038,20 +1046,24 @@ contract FSwapPoolInitializable is Ownable, ReentrancyGuard {
         uint256 amountToTransfer = user.amount;
         user.amount = 0;
         user.rewardDebt = 0;
+        stakedSupply = stakedSupply.sub(amountToTransfer);
 
         if (amountToTransfer > 0) {
-            stakedToken.safeTransfer(address(msg.sender), amountToTransfer);
+            stakedToken.safeTransfer(msg.sender, amountToTransfer);
         }
 
-        emit EmergencyWithdraw(msg.sender, user.amount);
+        emit EmergencyWithdraw(msg.sender, amountToTransfer);
     }
 
-    /*
-     * @notice Stop rewards
+    /**
+     * @notice Withdraw all reward tokens
      * @dev Only callable by owner. Needs to be for emergency.
      */
     function emergencyRewardWithdraw(uint256 _amount) external onlyOwner {
-        rewardToken.safeTransfer(address(msg.sender), _amount);
+        require(startBlock > block.number || bonusEndBlock < block.number, "Not allowed to remove reward tokens while pool is live");
+        safeRewardTransfer(msg.sender, _amount);
+
+        emit EmergencyRewardWithdraw(_amount);
     }
 
     /**
@@ -1073,7 +1085,7 @@ contract FSwapPoolInitializable is Ownable, ReentrancyGuard {
             "Cannot be reward token"
         );
 
-        IBEP20(_tokenAddress).safeTransfer(address(msg.sender), _tokenAmount);
+        IBEP20(_tokenAddress).safeTransfer(msg.sender, _tokenAmount);
 
         emit AdminTokenRecovery(_tokenAddress, _tokenAmount);
     }
@@ -1083,7 +1095,11 @@ contract FSwapPoolInitializable is Ownable, ReentrancyGuard {
      * @dev Only callable by owner
      */
     function stopReward() external onlyOwner {
+        require(startBlock < block.number, "Pool has not started");
+        require(block.number <= bonusEndBlock, "Pool has ended");
         bonusEndBlock = block.number;
+
+        emit RewardsStop(block.number);
     }
 
     /*
@@ -1117,19 +1133,10 @@ contract FSwapPoolInitializable is Ownable, ReentrancyGuard {
      */
     function updateRewardPerBlock(uint256 _rewardPerBlock) external onlyOwner {
         require(block.number < startBlock, "Pool has started");
+        uint256 rewardDecimals = uint256(rewardToken.decimals());
+        require(_rewardPerBlock <= MAX_EMISSION_RATE.mul(10**rewardDecimals), "Out of maximum emission rate");
         rewardPerBlock = _rewardPerBlock;
         emit NewRewardPerBlock(_rewardPerBlock);
-    }
-
-    /*
-     * @notice Update token tax rate
-     * @dev Only callable by owner.
-     * @param _tokenTaxRate: the token tax rate
-     */
-    function updateTokenTaxRate(uint16 _tokenTaxRate) external onlyOwner {
-        require(_tokenTaxRate < MAX_TOKEN_TAX_RATE, "Invalid token tax rate");
-        tokenTaxRate = _tokenTaxRate;
-        emit NewTokenTaxRate(tokenTaxRate);
     }
 
     /*
@@ -1138,7 +1145,7 @@ contract FSwapPoolInitializable is Ownable, ReentrancyGuard {
      * @param _depositFee: the deposit fee
      */
     function updateDepositFee(uint16 _depositFee) external onlyOwner {
-        require(_depositFee < MAX_DEPOSIT_FEE, "Invalid deposit fee");
+        require(_depositFee <= MAX_DEPOSIT_FEE, "Invalid deposit fee");
         depositFee = _depositFee;
         emit NewDepositFee(depositFee);
     }
@@ -1149,7 +1156,9 @@ contract FSwapPoolInitializable is Ownable, ReentrancyGuard {
      * @param _feeAddress: the fee address
      */
     function updateFeeAddress(address _feeAddress) external onlyOwner {
+        require(_feeAddress != address(0), "Invalid zero address");
         require(feeAddress != _feeAddress, "Same fee address already set");
+
         feeAddress = _feeAddress;
         emit NewFeeAddress(feeAddress);
     }
@@ -1190,13 +1199,12 @@ contract FSwapPoolInitializable is Ownable, ReentrancyGuard {
      */
     function pendingReward(address _user) external view returns (uint256) {
         UserInfo storage user = userInfo[_user];
-        uint256 stakedTokenSupply = stakedToken.balanceOf(address(this));
         if (block.number > lastRewardBlock && stakedTokenSupply != 0) {
             uint256 multiplier = _getMultiplier(lastRewardBlock, block.number);
             uint256 cakeReward = multiplier.mul(rewardPerBlock);
             uint256 adjustedTokenPerShare =
                 accTokenPerShare.add(
-                    cakeReward.mul(PRECISION_FACTOR).div(stakedTokenSupply)
+                    cakeReward.mul(PRECISION_FACTOR).div(stakedSupply)
                 );
             return
                 user
@@ -1220,9 +1228,7 @@ contract FSwapPoolInitializable is Ownable, ReentrancyGuard {
             return;
         }
 
-        uint256 stakedTokenSupply = stakedToken.balanceOf(address(this));
-
-        if (stakedTokenSupply == 0) {
+        if (stakedSupply == 0) {
             lastRewardBlock = block.number;
             return;
         }
@@ -1230,7 +1236,7 @@ contract FSwapPoolInitializable is Ownable, ReentrancyGuard {
         uint256 multiplier = _getMultiplier(lastRewardBlock, block.number);
         uint256 cakeReward = multiplier.mul(rewardPerBlock);
         accTokenPerShare = accTokenPerShare.add(
-            cakeReward.mul(PRECISION_FACTOR).div(stakedTokenSupply)
+            cakeReward.mul(PRECISION_FACTOR).div(stakedSupply)
         );
         lastRewardBlock = block.number;
     }
