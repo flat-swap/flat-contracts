@@ -829,7 +829,7 @@ contract FSwapPoolInitializable is Ownable, ReentrancyGuard {
     uint256 public lastRewardBlock;
 
     uint16 public constant MAX_DEPOSIT_FEE = 2000;
-    uint256 public constant MAX_EMISSION_RATE = 10**7;
+    uint16 public constant MAX_EMISSION_RATE = 10**7;
 
     // The deposit fee
     uint16 public depositFee;
@@ -988,7 +988,7 @@ contract FSwapPoolInitializable is Ownable, ReentrancyGuard {
             PRECISION_FACTOR
         );
 
-        emit Deposit(msg.sender, _amount);
+        emit Deposit(msg.sender, realAmount);
     }
 
     /*

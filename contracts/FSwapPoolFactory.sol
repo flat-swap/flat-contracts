@@ -934,7 +934,7 @@ contract FSwapPoolInitializable is Ownable, ReentrancyGuard {
     uint256 public lastRewardBlock;
 
     uint16 public constant MAX_DEPOSIT_FEE = 2000;
-    uint16 public constant MAX_EMISSION_RATE = 10**7;
+    uint256 public constant MAX_EMISSION_RATE = 10**7;
 
     // The deposit fee
     uint16 public depositFee;
@@ -1080,8 +1080,8 @@ contract FSwapPoolInitializable is Ownable, ReentrancyGuard {
 
             if (depositFee > 0) {
                 feeAmount = _amount.mul(depositFee).div(10000);
-                if (fee > 0) {
-                    stakedToken.safeTransfer(feeAddress, fee);
+                if (feeAmount > 0) {
+                    stakedToken.safeTransfer(feeAddress, feeAmount);
                 }
             }
 
@@ -1093,7 +1093,7 @@ contract FSwapPoolInitializable is Ownable, ReentrancyGuard {
             PRECISION_FACTOR
         );
 
-        emit Deposit(msg.sender, realAmount);
+        emit Deposit(msg.sender, _amount);
     }
 
     /*
@@ -1304,7 +1304,7 @@ contract FSwapPoolInitializable is Ownable, ReentrancyGuard {
      */
     function pendingReward(address _user) external view returns (uint256) {
         UserInfo storage user = userInfo[_user];
-        if (block.number > lastRewardBlock && stakedTokenSupply != 0) {
+        if (block.number > lastRewardBlock && stakedSupply != 0) {
             uint256 multiplier = _getMultiplier(lastRewardBlock, block.number);
             uint256 cakeReward = multiplier.mul(rewardPerBlock);
             uint256 adjustedTokenPerShare =
@@ -1375,7 +1375,6 @@ contract FSwapPoolFactory is Ownable {
     event NewFSwapPoolContract(address indexed smartChef);
 
     uint16 public constant MAX_DEPOSIT_FEE = 2000;
-    uint16 public constant MAX_TOKEN_TAX_RATE = 2000;
 
     constructor() public {
         //
@@ -1387,11 +1386,10 @@ contract FSwapPoolFactory is Ownable {
      * @param _rewardToken: reward token address
      * @param _rewardPerBlock: reward per block (in rewardToken)
      * @param _startBlock: start block
-     * @param _endBlock: end block
+     * @param _bonusEndBlock: end block
      * @param _depositFee: deposit fee
      * @param _poolLimitPerUser: pool limit per user in stakedToken (if any, else 0)
      * @param _admin: admin address with ownership
-     * @return address of new smart chef contract
      */
     function deployPool(
         IBEP20 _stakedToken,
